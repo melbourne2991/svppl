@@ -1,8 +1,10 @@
 mod cli;
 mod project_template;
 
-fn main() {
-    cli::start();
+#[tokio::main]
+
+async fn main() {
+    cli::start().await;
 }
 
 // use std::ffi::OsStr;

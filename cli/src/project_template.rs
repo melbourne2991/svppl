@@ -13,7 +13,15 @@ pub (crate) trait ProjectTemplateSource {
     async fn get_templates(&self) -> Pin<Box<dyn Stream<Item = Result<(String, String)>>>>;
 }
 
-pub (crate) struct DefaultProjectTemplateSource {}
+pub (crate) struct DefaultProjectTemplateSource {
+    
+}
+
+impl DefaultProjectTemplateSource {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
 
 const TMPL_PACKAGE_JSON: &[u8] = include_bytes!("templates/typescript/package.json.hbs");
 
@@ -30,14 +38,14 @@ impl ProjectTemplateSource for DefaultProjectTemplateSource {
     }
 }
 
-pub (crate) struct ProjectTemplateOptions {
-    pub target_dir: String,
-    pub package_name: String,
+pub (crate) struct ProjectTemplateOptions <'a> {
+    pub target_dir: &'a PathBuf,
+    pub package_name: &'a str,
 }
 
 pub (crate) async fn render<T: ProjectTemplateSource>(
     source: &T,
-    options: ProjectTemplateOptions,
+    options: ProjectTemplateOptions<'_>,
 ) -> Result<Vec<PathBuf>> {
     let mut reg = Handlebars::new();
     reg.register_template_string("tpl_1", "Good afternoon, {{name}}")?;
@@ -50,7 +58,7 @@ pub (crate) async fn render<T: ProjectTemplateSource>(
         let (file_path, content) = template?;
         let data = json!({"package_name": options.package_name});
 
-        let full_path = Path::new(options.target_dir.as_str()).join(file_path.as_str());
+        let full_path = Path::new(options.target_dir).join(file_path.as_str());
         let mut file = File::create(full_path.clone())?;
 
         reg.render_template_to_write(&content, &data, &mut file)?;

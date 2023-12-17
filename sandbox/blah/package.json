@@ -1,0 +1,7 @@
+{
+  "name": "blah",
+  "scripts": {},
+  "dependencies": {
+    "esbuild": "^0.19.9"
+  }
+}

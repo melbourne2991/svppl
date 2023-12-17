@@ -1,11 +1,16 @@
+use std::env;
 use std::ffi::OsStr;
 use std::ffi::OsString;
+use std::path::Path;
 use std::path::PathBuf;
+use std::str::FromStr;
 
+use anyhow::anyhow;
+use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use inquire::Text;
 use crate::project_template;
+use inquire::Text;
 
 /// A fictional versioning CLI
 #[derive(Debug, Parser)] // requires `derive` feature
@@ -19,27 +24,60 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Initializes a new project
-    Init {
-
-    },
+    Init {},
 
     /// Initializes a new project
     Deploy {},
 }
 
-pub fn start() {
+pub async fn start() {
     let args = Cli::parse();
 
-    match args.command {
-        Commands::Init {} => {
-            init_project();
-        }
-        Commands::Deploy {} => {
-            println!("Deploy");
-        }
+    let result = match args.command {
+        Commands::Init {} => init_project().await,
+        Commands::Deploy {} => deploy_project().await,
+    };
+
+    if let Err(e) = result {
+        println!("Error: {:?}", e);
     }
 }
 
-fn init_project() {
-    Text::new("Project name").prompt();
+async fn init_project() -> Result<()> {
+    let project_name_input = Text::new("Project name:")
+        .with_help_message("Leave blank to use the current directory")
+        .prompt()?;
+
+    let cwd = env::current_dir()?;
+
+    let (project_name, target_path) = if project_name_input.len() == 0 {
+        let project_name = cwd
+            .file_name()
+            .ok_or(anyhow!("Could not get the file name for directory"))?
+            .to_str()
+            .ok_or(anyhow!("Could not convert file name to string"))?;
+
+        (project_name, cwd.clone())
+    } else {
+        let target = Path::new(&cwd).join(&project_name_input);
+        std::fs::create_dir(&target)?;
+        (project_name_input.as_str(), target)
+    };
+
+    let src = project_template::DefaultProjectTemplateSource::new();
+
+    project_template::render(
+        &src,
+        project_template::ProjectTemplateOptions {
+            target_dir: &target_path,
+            package_name: project_name,
+        },
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn deploy_project() -> Result<()> {
+    Ok(())
 }

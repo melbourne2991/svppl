@@ -8,5 +8,7 @@ sync_third_party:
 
 build: copy_bin
 
+clean_sandbox: cd sandbox && rm -rf ./*
+
 build_bin:
     cargo build --verbose
