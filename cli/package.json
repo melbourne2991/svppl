@@ -1,0 +1,13 @@
+{
+  "name": "@svppl/cli",
+  "version": "0.0.1",
+  "description": "",
+  "bin": {
+    "svppl": "./bin/cli"
+  },
+  "scripts": {},
+  "author": "",
+  "dependencies": {
+    "esbuild": "^0.19.9"
+  }
+}

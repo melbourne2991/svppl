@@ -1,0 +1,13 @@
+{
+  "tasks": {
+    "dev": "deno run --watch ./js/main.ts"
+  },
+  "imports": {
+    "vite": "npm:vite",
+    "vite-node/server": "npm:vite-node/server",
+    "vite-node/client": "npm:vite-node/client",
+    "vite-node/source-map": "npm:vite-node/source-map",
+    "vite-node/hmr": "npm:vite-node/hmr",
+    "@sinclair/typebox": "npm:@sinclair/typebox"
+  }
+}
