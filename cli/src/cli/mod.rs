@@ -26,8 +26,19 @@ enum Commands {
     /// Initializes a new project
     Init {},
 
-    /// Initializes a new project
-    Deploy {},
+    /// Cluster management
+    Cluster {
+        #[command(subcommand)]
+        command: ClusterCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ClusterCommands {
+    /// Starts a node and joins the given cluster
+    Join {
+
+    }
 }
 
 pub async fn start() {
@@ -35,7 +46,12 @@ pub async fn start() {
 
     let result = match args.command {
         Commands::Init {} => init_project().await,
-        Commands::Deploy {} => deploy_project().await,
+        Commands::Cluster { command } => match command {
+            ClusterCommands::Join {  } => {
+                println!("Starting cluster");
+                Ok(())
+            }
+        }
     };
 
     if let Err(e) = result {

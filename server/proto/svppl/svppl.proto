@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package svppl.v0;
+
+service Task {
+  rpc ScheduleTask (ScheduleTaskRequest) returns (ScheduleTaskReply) {}
+}
+
+message ScheduleTaskRequest {
+  string queue_id = 1;
+  int64 scheduled_at = 2;
+  int64 timeout_ms = 3;
+}
+
+message ScheduleTaskReply {
+  bool success = 1;
+}
