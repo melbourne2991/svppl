@@ -61,10 +61,7 @@ pub async fn parse() -> anyhow::Result<()> {
         .await
         .context("Failed to start gossip api")?;
 
-    
-
     crate::frontend::start_frontend().await;
     
-
     Ok(())
 }

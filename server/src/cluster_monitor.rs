@@ -15,11 +15,9 @@ use futures::StreamExt;
 use tokio::sync::Mutex;
 use tokio_stream::Stream;
 
-
 pub struct ClusterMonitor {
     chitchat: Arc<Mutex<Chitchat>>,
 }
-
 
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct ClusterNodeKey(
@@ -34,17 +32,34 @@ impl ClusterNodeKey  {
     pub fn eq_node_id(&self, other: &ClusterNodeKey) -> bool {
         self.node_id().eq(other.node_id())
     }
+
 }
 
 pub struct ClusterState(
     BTreeMap<ChitchatId, NodeState>
 );
 
+pub struct ClusterNode<'a>(&'a NodeState);
+
+impl <'a> ClusterNode <'a> {
+    pub fn grpc_addr(&self) -> Result<SocketAddr> {
+        let maybe_endpoint_str = self.0.get("grpc_endpoint");
+        let endpoint_str = maybe_endpoint_str.ok_or(anyhow::anyhow!("grpc_endpoint not found"))?;
+        let endpoint = endpoint_str.parse::<SocketAddr>()?;
+
+        Ok(endpoint)
+    }
+}
+
 impl ClusterState {
     pub fn keys(&self) -> impl Iterator<Item = ClusterNodeKey> + '_ {
         self.0.keys().map(|key| {
             ClusterNodeKey(key.clone())
         })
+    }
+
+    pub fn get(&self, key: &ClusterNodeKey) -> Option<ClusterNode> {
+        self.0.get(&key.0).map(|ns| ClusterNode(ns))
     }
 }
 
@@ -80,6 +95,8 @@ impl ClusterMonitor {
         let locked = self.chitchat.lock().await;
         ClusterNodeKey(locked.self_chitchat_id().clone())
     }
+
+
 }
 
 pub async fn start_gossip(config: ClusterMonitorConfig) -> Result<ClusterMonitor> {
