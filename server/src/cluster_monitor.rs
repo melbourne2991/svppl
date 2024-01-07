@@ -67,6 +67,7 @@ pub struct ClusterMonitorConfig {
     pub initial_kv: Vec<(String, String)>,
 }
 
+#[derive(Clone)]
 pub struct ClusterMonitor {
     chitchat: Arc<Mutex<Chitchat>>,
 }

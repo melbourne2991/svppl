@@ -18,7 +18,7 @@ pub fn start(listen_addr: SocketAddr, cluster_monitor: &cluster_monitor::Cluster
 
     Server::bind(&listen_addr).serve(make_service_fn(move |_| {
         let mut core = ServiceBuilder::new()
-        .layer(PartitionRoutingLayer::default())
+        .layer(PartitionRoutingLayer::new(cluster_monitor.clone()))
         .service(tonic.clone());
 
         std::future::ready(Ok::<_, Infallible>(tower::service_fn(move |req: hyper::Request<hyper::Body>| {

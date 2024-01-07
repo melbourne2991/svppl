@@ -1,13 +1,14 @@
 use std::{
     collections::HashMap,
     convert::Infallible,
+    error::Error,
+    io::Stderr,
     net::SocketAddr,
-    pin::Pin,
     task::{Context, Poll},
 };
 
 use crate::{
-    cluster_monitor::{ClusterMonitor, ClusterNodeIdEq, ClusterState},
+    cluster_monitor::{self, ClusterMonitor, ClusterNodeIdEq, ClusterState},
     partition_resolver::PartitionResolver,
 };
 use futures::{future::BoxFuture, StreamExt};
@@ -16,23 +17,23 @@ use tonic::transport::channel::{Channel, ResponseFuture};
 use tonic::transport::Body;
 use tower::Service;
 
-
+use hyper::body::HttpBody;
 // #[derive(Clone)]
-pub struct PartitionRouter<'a, S> {
-    cluster_monitor: &'a mut ClusterMonitor,
+pub struct PartitionRouter<S> {
+    cluster_monitor: ClusterMonitor,
     partition_resolver: PartitionResolver,
     inner_service: S,
     channel_map: HashMap<ClusterNodeIdEq, (SocketAddr, Channel)>,
     cluster_state: ClusterState,
 }
 
-impl<'a, S> PartitionRouter<'a, S>
+impl<S> PartitionRouter<S>
 where
     S: Service<hyper::Request<Body>>,
 {
-    pub fn new(cluster_monitor: &'a mut ClusterMonitor, inner_service: S) -> Self {
+    pub fn new(cluster_monitor: &ClusterMonitor, inner_service: S) -> Self {
         Self {
-            cluster_monitor,
+            cluster_monitor: cluster_monitor.clone(),
             inner_service,
             partition_resolver: PartitionResolver::new(50),
             channel_map: HashMap::new(),
@@ -92,10 +93,14 @@ where
     }
 }
 
-impl<'a, S> Service<hyper::Request<Body>> for PartitionRouter<'a, S>
+impl<S> Service<hyper::Request<Body>> for PartitionRouter<S>
 where
-    S: Service<hyper::Request<Body>, Response = hyper::Response<BoxBody>> + Clone + Send + 'static,
+    S: Service<hyper::Request<Body>, Response = hyper::Response<BoxBody>, Error = Infallible>
+        + Clone
+        + Send
+        + 'static,
     S::Future: Send + 'static,
+    S::Error: Into<std::convert::Infallible> + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -118,39 +123,74 @@ where
         let mut inner = std::mem::replace(&mut self.inner_service, clone);
 
         Box::pin(async move {
-            // let response = if let Some(mut channel) = maybe_channel {
-            //     channel.call(req).await?
-            // } else {
-            //     inner.call(req).await?
-            // };
+            let response = if let Some(mut channel) = maybe_channel {
+                let (parts, body) = req.into_parts();
 
-            let response = inner.call(req).await?;
+                let boxed = body
+                    .map_err(|err| {
+                        let err: Box<dyn Error + Send + Sync> = err.into();
+                        tonic::Status::from_error(err)
+                    })
+                    .boxed_unsync();
 
-            // let (parts, body) = req.into_parts();
-            // let req = hyper::Request::from_parts(parts, body.boxed());
+                let req_boxed = hyper::Request::from_parts(parts, boxed);
 
-            // let response = maybe_channel.unwrap().call(req).await?;
+                let res = channel.call(req_boxed).await;
 
-            // let (parts, body) = response.into_parts();
+                match res {
+                    Ok(res) => {
+                        let (parts, body) = res.into_parts();
 
-            // let response = hyper::Response::from_parts(parts, body.into_inner());
+                        let body = body
+                            .map_err(|err| {
+                                let err: Box<dyn Error + Send + Sync> = err.into();
+                                tonic::Status::from_error(err)
+                            })
+                            .boxed_unsync();
+
+                        let res_boxed = hyper::Response::from_parts(parts, body);
+
+                        res_boxed
+                    }
+                    Err(err) => {
+                        let err: Box<dyn Error + Send + Sync> = err.into();
+                        let tonic_status = tonic::Status::from_error(err);
+
+                        let body = hyper::Body::empty()
+                            .map_err(move |_| tonic_status.clone())
+                            .boxed_unsync();
+
+                        hyper::Response::new(body)
+                    }
+                }
+            } else {
+                inner.call(req).await?
+            };
 
             Ok(response)
         })
     }
 }
 
-#[derive(Clone, Default)]
-pub struct PartitionRoutingLayer<'a> {
-    phantom: std::marker::PhantomData<&'a ()>,
-    cluster_monitor: &'a mut ClusterMonitor,
+#[derive(Clone)]
+pub struct PartitionRoutingLayer {
+    cluster_monitor: ClusterMonitor,
 }
 
-impl<'a, T> tower::Layer<T> for PartitionRoutingLayer<'a>
+impl PartitionRoutingLayer {
+    pub fn new(cluster_monitor: ClusterMonitor) -> Self {
+        Self { cluster_monitor }
+    }
+}
+
+impl<T> tower::Layer<T> for PartitionRoutingLayer
+where
+    T: Service<hyper::Request<Body>> + Clone + Send + 'static,
+    T::Future: Send + 'static,
 {
-    type Service = PartitionRouter<'a, T>;
+    type Service = PartitionRouter<T>;
 
     fn layer(&self, inner: T) -> Self::Service {
-        PartitionRouter::new(&mut ClusterMonitor::default(), inner)
+        PartitionRouter::new(&self.cluster_monitor, inner)
     }
 }
