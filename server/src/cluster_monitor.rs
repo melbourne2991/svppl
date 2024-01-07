@@ -1,30 +1,28 @@
 use std::{
+    borrow::BorrowMut,
     collections::BTreeMap,
     net::SocketAddr,
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::{Duration, SystemTime}, hash::Hasher,
 };
 
-use anyhow::Result;
+use anyhow::{Error, Result};
 use chitchat::{
     spawn_chitchat, transport::UdpTransport, Chitchat, ChitchatConfig, ChitchatId,
     FailureDetectorConfig, NodeState,
 };
-
+use std::hash::Hash;
 use futures::StreamExt;
-use tokio::sync::Mutex;
-use tokio_stream::Stream;
-
-pub struct ClusterMonitor {
-    chitchat: Arc<Mutex<Chitchat>>,
-}
+use tokio::sync::{
+    watch::{self, Receiver},
+    Mutex,
+};
+use tokio_stream::{wrappers::WatchStream, Stream};
 
 #[derive(Clone, Eq, PartialEq, Hash)]
-pub struct ClusterNodeKey(
-    ChitchatId
-);
+pub struct ClusterNodeKey(ChitchatId);
 
-impl ClusterNodeKey  {
+impl ClusterNodeKey {
     pub fn node_id(&self) -> &String {
         &self.0.node_id
     }
@@ -32,16 +30,14 @@ impl ClusterNodeKey  {
     pub fn eq_node_id(&self, other: &ClusterNodeKey) -> bool {
         self.node_id().eq(other.node_id())
     }
-
 }
 
-pub struct ClusterState(
-    BTreeMap<ChitchatId, NodeState>
-);
+#[derive(Clone, Default)]
+pub struct ClusterState(BTreeMap<ChitchatId, NodeState>);
 
 pub struct ClusterNode<'a>(&'a NodeState);
 
-impl <'a> ClusterNode <'a> {
+impl<'a> ClusterNode<'a> {
     pub fn grpc_addr(&self) -> Result<SocketAddr> {
         let maybe_endpoint_str = self.0.get("grpc_endpoint");
         let endpoint_str = maybe_endpoint_str.ok_or(anyhow::anyhow!("grpc_endpoint not found"))?;
@@ -53,9 +49,7 @@ impl <'a> ClusterNode <'a> {
 
 impl ClusterState {
     pub fn keys(&self) -> impl Iterator<Item = ClusterNodeKey> + '_ {
-        self.0.keys().map(|key| {
-            ClusterNodeKey(key.clone())
-        })
+        self.0.keys().map(|key| ClusterNodeKey(key.clone()))
     }
 
     pub fn get(&self, key: &ClusterNodeKey) -> Option<ClusterNode> {
@@ -73,20 +67,18 @@ pub struct ClusterMonitorConfig {
     pub initial_kv: Vec<(String, String)>,
 }
 
+pub struct ClusterMonitor {
+    chitchat: Arc<Mutex<Chitchat>>,
+}
+
 impl ClusterMonitor {
     pub fn new(chitchat: Arc<Mutex<Chitchat>>) -> Self {
-        Self {
-            chitchat,
-        }
+        Self { chitchat }
     }
 
     pub async fn watch(&mut self) -> Box<dyn Stream<Item = ClusterState> + Send + Unpin> {
         let locked = self.chitchat.lock().await;
-
-        let str = locked.live_nodes_watcher()
-        .map(|tree| {
-            ClusterState(tree)
-        });
+        let str = locked.live_nodes_watcher().map(|tree| ClusterState(tree));
 
         Box::new(str)
     }
@@ -95,8 +87,6 @@ impl ClusterMonitor {
         let locked = self.chitchat.lock().await;
         ClusterNodeKey(locked.self_chitchat_id().clone())
     }
-
-
 }
 
 pub async fn start_gossip(config: ClusterMonitorConfig) -> Result<ClusterMonitor> {
@@ -124,4 +114,21 @@ pub async fn start_gossip(config: ClusterMonitorConfig) -> Result<ClusterMonitor
         chitchat_handler.chitchat();
 
     Ok(ClusterMonitor::new(chitchat))
+}
+
+#[derive(Clone)]
+pub struct ClusterNodeIdEq(pub ClusterNodeKey);
+
+impl PartialEq for ClusterNodeIdEq {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.node_id() == other.0.node_id()
+    }
+}
+
+impl Eq for ClusterNodeIdEq {}
+
+impl Hash for ClusterNodeIdEq {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.node_id().hash(state);
+    }
 }
