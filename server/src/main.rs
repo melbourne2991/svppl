@@ -1,5 +1,5 @@
-use server_lib::{opts, app};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::Parser;
+use server_lib::{app, opts};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -8,4 +8,3 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
-

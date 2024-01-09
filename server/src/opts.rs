@@ -1,11 +1,5 @@
 use std::net::SocketAddr;
-
-use crate::{
-    cluster_monitor::{self, ClusterMonitorConfig},
-    resolve_addr,
-};
-use anyhow::Context;
-use clap::{Parser};
+use clap::Parser;
 
 #[derive(Debug, Parser)] // requires `derive` feature
 pub struct Opts {

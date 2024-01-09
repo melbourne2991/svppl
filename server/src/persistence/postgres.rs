@@ -1,7 +1,7 @@
 use anyhow::Result;
 use futures::Future;
 use sqlx::Row;
-use sqlx::{postgres::PgPoolOptions, Acquire, Pool, Postgres};
+use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 
 pub struct PostgresPersistence {
     pool: Pool<Postgres>,

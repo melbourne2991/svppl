@@ -1,6 +1,5 @@
-use crate::{resolve_addr, cluster_monitor::ClusterMonitorConfig};
-
-use anyhow::{Context};
+use crate::{cluster_monitor::ClusterMonitorConfig, resolve_addr};
+use anyhow::Context;
 
 pub async fn start(opts: crate::opts::Opts) -> anyhow::Result<()> {
     let gossip_public_addr =
@@ -19,7 +18,7 @@ pub async fn start(opts: crate::opts::Opts) -> anyhow::Result<()> {
         )],
     };
 
-    let (cluster_monitor, handle) = crate::cluster_monitor::start_gossip(config)
+    let (_cluster_monitor, _handle) = crate::cluster_monitor::start_gossip(config)
         .await
         .context("Failed to start gossip api")?;
 

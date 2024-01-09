@@ -2,8 +2,8 @@ use crate::persistence::postgres_image::PostgresImage;
 use anyhow::Result;
 use nanoid::nanoid;
 use server_lib::persistence::postgres::{self, PostgresPersistence};
-use testcontainers::{clients, RunnableImage};
-use testcontainers::{core::WaitFor, Image};
+use testcontainers::{clients};
+
 
 #[tokio::test]
 async fn insert_and_query_tasks() -> Result<()> {

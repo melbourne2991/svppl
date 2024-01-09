@@ -187,7 +187,7 @@ impl PartitionChannelStore {
                         .await
                         .insert(node_eq_key, (latest_addr, channel));
                 }
-                Err(e) => {
+                Err(_e) => {
                     // TODO: log error
                 }
             }

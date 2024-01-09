@@ -1,7 +1,5 @@
-use futures::{Future, FutureExt, TryFutureExt};
-use std::borrow::Borrow;
-use std::future::IntoFuture;
-use std::sync::Arc;
+use futures::{Future, FutureExt};
+
 use std::{convert::Infallible, net::SocketAddr};
 use tokio::sync::oneshot;
 use tower::ServiceBuilder;
@@ -69,7 +67,7 @@ pub async fn start(
                 Some(change) = changes.next() => {
                     let result = channel_store.sync(&change).await;
 
-                    if let Err(err) = result {
+                    if let Err(_err) = result {
                         // Log the error or handle it as necessary
                     }
                 }
@@ -78,7 +76,7 @@ pub async fn start(
     });
 
     let on_channel_store_end = channel_store_sync_handle.map(|result| {
-        if let Err(e) = result {
+        if let Err(_e) = result {
             // Log the error or handle it as necessary
         }
     });
@@ -95,11 +93,14 @@ pub async fn start(
         }))
         .with_graceful_shutdown(on_channel_store_end);
 
-    let handle = RpcServerHandle::new(shutdown_tx, shutdown_complete.map(|result| {
-        if let Err(err) = result {
-            // Log the error or handle it as necessary
-        }
-    }));
+    let handle = RpcServerHandle::new(
+        shutdown_tx,
+        shutdown_complete.map(|result| {
+            if let Err(_err) = result {
+                // Log the error or handle it as necessary
+            }
+        }),
+    );
 
     return handle;
 }
