@@ -1,23 +1,20 @@
 use std::{
-    borrow::BorrowMut,
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
+    hash::Hasher,
     net::SocketAddr,
     sync::Arc,
-    time::{Duration, SystemTime}, hash::Hasher,
+    time::{Duration, SystemTime},
 };
 
-use anyhow::{Error, Result};
+use anyhow::Result;
 use chitchat::{
-    spawn_chitchat, transport::UdpTransport, Chitchat, ChitchatConfig, ChitchatId,
+    spawn_chitchat, transport::UdpTransport, Chitchat, ChitchatConfig, ChitchatHandle, ChitchatId,
     FailureDetectorConfig, NodeState,
 };
-use std::hash::Hash;
 use futures::StreamExt;
-use tokio::sync::{
-    watch::{self, Receiver},
-    Mutex,
-};
-use tokio_stream::{wrappers::WatchStream, Stream};
+use std::hash::Hash;
+use tokio::sync::Mutex;
+use tokio_stream::wrappers::WatchStream;
 
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct ClusterNodeKey(ChitchatId);
@@ -67,21 +64,58 @@ pub struct ClusterMonitorConfig {
     pub initial_kv: Vec<(String, String)>,
 }
 
-#[derive(Clone)]
 pub struct ClusterMonitor {
     chitchat: Arc<Mutex<Chitchat>>,
+    live_nodes: HashSet<ClusterNodeIdEq>,
+}
+
+#[derive(Clone)]
+pub struct ClusterStateChange {
+    pub added: Vec<ClusterNodeKey>,
+    pub removed: Vec<ClusterNodeKey>,
+    pub state: ClusterState,
 }
 
 impl ClusterMonitor {
     pub fn new(chitchat: Arc<Mutex<Chitchat>>) -> Self {
-        Self { chitchat }
+        Self {
+            chitchat,
+            live_nodes: HashSet::new(),
+        }
     }
 
-    pub async fn watch(&mut self) -> Box<dyn Stream<Item = ClusterState> + Send + Unpin> {
+    pub async fn watch(&mut self) -> WatchStream<ClusterStateChange> {
         let locked = self.chitchat.lock().await;
-        let str = locked.live_nodes_watcher().map(|tree| ClusterState(tree));
+        let mut changes = locked.live_nodes_watcher().map(|tree| ClusterState(tree));
 
-        Box::new(str)
+        let (tx, rx) = tokio::sync::watch::channel(ClusterStateChange {
+            added: Vec::new(),
+            removed: Vec::new(),
+            state: ClusterState::default(),
+        });
+
+        while let Some(cs) = changes.next().await {
+            let prev = self.live_nodes.clone();
+            self.live_nodes.clear();
+
+            cs.keys().for_each(|key| {
+                self.live_nodes.insert(ClusterNodeIdEq(key));
+            });
+
+            if self.live_nodes != prev {
+                let added = self.live_nodes.difference(&prev);
+                let removed = prev.difference(&self.live_nodes);
+
+                tx.send(ClusterStateChange {
+                    added: added.map(|node| node.0.clone()).collect(),
+                    removed: removed.map(|node| node.0.clone()).collect(),
+                    state: cs,
+                })
+                .unwrap();
+            }
+        }
+
+        tokio_stream::wrappers::WatchStream::new(rx)
     }
 
     pub async fn self_key(&mut self) -> ClusterNodeKey {
@@ -90,7 +124,9 @@ impl ClusterMonitor {
     }
 }
 
-pub async fn start_gossip(config: ClusterMonitorConfig) -> Result<ClusterMonitor> {
+pub async fn start_gossip(
+    config: ClusterMonitorConfig,
+) -> Result<(ClusterMonitor, ChitchatHandle)> {
     let generation = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
@@ -108,13 +144,12 @@ pub async fn start_gossip(config: ClusterMonitorConfig) -> Result<ClusterMonitor
         marked_for_deletion_grace_period: 10_000,
     };
 
-    let chitchat_handler =
-        spawn_chitchat(chitchat_config, config.initial_kv, &UdpTransport).await?;
+    let chitchat_handle = spawn_chitchat(chitchat_config, config.initial_kv, &UdpTransport).await?;
 
     let chitchat: std::sync::Arc<tokio::sync::Mutex<chitchat::Chitchat>> =
-        chitchat_handler.chitchat();
+        chitchat_handle.chitchat();
 
-    Ok(ClusterMonitor::new(chitchat))
+    Ok((ClusterMonitor::new(chitchat), chitchat_handle))
 }
 
 #[derive(Clone)]

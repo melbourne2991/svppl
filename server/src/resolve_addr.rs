@@ -1,12 +1,14 @@
-use dns_lookup::{lookup_host, lookup_addr};
-use std::net::{IpAddr, SocketAddr};
+use tokio::net::lookup_host;
+use std::net::{SocketAddr};
 use anyhow::Result;
 
-pub fn resolve_socket_addr(hostname: &str, port: u16) -> Result<SocketAddr> {
-    let ips = lookup_host(hostname)?;
+pub async fn resolve_socket_addr(hostname: &str, port: u16) -> Result<SocketAddr> {
+    let ips = lookup_host(hostname).await?;
     
-    for ip in ips {
-        return Ok(SocketAddr::new(ip, port));
+    for addr in ips {
+        let mut addr_port = addr.clone();
+        addr_port.set_port(port);
+        return Ok(addr_port)
     }
 
     Err(anyhow::anyhow!("Failed to resolve hostname: {}", hostname))

@@ -1,8 +1,10 @@
-use server_lib::cli;
+use server_lib::{opts, app};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    cli::parse().await?;
+    let opts = opts::Opts::parse();
+    app::start(opts).await?;
 
     Ok(())
 }

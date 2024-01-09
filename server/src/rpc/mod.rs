@@ -1,5 +1,3 @@
-use tonic::{transport::Server, Request, Response, Status};
-
 pub mod proto;
 pub mod server;
 

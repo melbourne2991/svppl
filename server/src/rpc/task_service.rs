@@ -1,11 +1,4 @@
-
-
-use super::proto::{
-    self,
-    task_server::{Task},
-};
-
-
+use super::proto::{self, task_server::Task};
 
 #[derive(Default)]
 pub struct TaskService {}

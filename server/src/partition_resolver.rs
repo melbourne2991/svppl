@@ -1,13 +1,7 @@
-use std::{collections::HashSet, hash::Hasher};
-
-use crate::cluster_monitor::{ClusterMonitor, ClusterNodeKey, ClusterState, ClusterNodeIdEq};
-use conhash::{ConsistentHash, Node};
-use futures::StreamExt;
-use std::hash::Hash;
-
+use crate::cluster_monitor::{ClusterNodeIdEq, ClusterNodeKey, ClusterStateChange};
+use crate::conhash::{ConsistentHash, Node, DefaultBytesHasher};
 
 pub struct PartitionResolver {
-    live_nodes: HashSet<ClusterNodeIdEq>,
     conhash: ConsistentHash<ClusterNodeIdEq>,
     replica_count: usize,
 }
@@ -19,33 +13,21 @@ impl Node for ClusterNodeIdEq {
 }
 
 impl PartitionResolver {
-    pub fn new(replica_count: usize) -> Self {
+    pub fn new(replica_count: usize, seed: (u64, u64)) -> Self {
         Self {
-            live_nodes: HashSet::new(),
-            conhash: ConsistentHash::new(),
+            conhash: ConsistentHash::<ClusterNodeIdEq, DefaultBytesHasher>::with_seed(seed),
             replica_count,
         }
     }
 
-    pub async fn sync(&mut self, cs: &ClusterState) {
-        let prev = self.live_nodes.clone();
-        self.live_nodes.clear();
+    pub async fn sync(&mut self, cs: &ClusterStateChange) {
+        for node in &cs.added {
+            self.conhash
+                .add(&ClusterNodeIdEq(node.clone()), self.replica_count);
+        }
 
-        cs.keys().for_each(|key| {
-            self.live_nodes.insert(ClusterNodeIdEq(key));
-        });
-
-        if self.live_nodes != prev {
-            let added = self.live_nodes.difference(&prev);
-            let removed = prev.difference(&self.live_nodes);
-
-            for node in added {
-                self.conhash.add(node, self.replica_count);
-            }
-
-            for node in removed {
-                self.conhash.remove(node);
-            }
+        for node in &cs.removed {
+            self.conhash.remove(&ClusterNodeIdEq(node.clone()));
         }
     }
 
@@ -54,4 +36,3 @@ impl PartitionResolver {
         node.map(|node| &node.0)
     }
 }
-
