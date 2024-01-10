@@ -1,4 +1,8 @@
 use futures::{Future, FutureExt};
+use tracing::Instrument;
+use tracing::Level;
+use tracing::info;
+use tracing::span;
 
 use std::{convert::Infallible, net::SocketAddr};
 use tokio::sync::oneshot;
@@ -46,16 +50,18 @@ pub async fn start(
     listen_addr: SocketAddr,
     cluster_monitor: &mut cluster_monitor::ClusterMonitor,
 ) -> RpcServerHandle {
+
     let task_service = TaskService::default();
     let task_server = TaskServer::new(task_service);
 
     let own_key = cluster_monitor.self_key().await;
 
     let mut channel_store = PartitionChannelStore::new(own_key);
-    let channel_store_ = channel_store.clone();
     let mut changes = cluster_monitor.watch().await;
 
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+
+    let channel_store_ = channel_store.clone();
 
     let channel_store_sync_handle = tokio::spawn(async move {
         loop {
@@ -67,8 +73,8 @@ pub async fn start(
                 Some(change) = changes.next() => {
                     let result = channel_store.sync(&change).await;
 
-                    if let Err(_err) = result {
-                        // Log the error or handle it as necessary
+                    if let Err(err) = result {
+                        tracing::error!(err = ?err, "channel_store_sync_error");
                     }
                 }
             }
@@ -76,8 +82,8 @@ pub async fn start(
     });
 
     let on_channel_store_end = channel_store_sync_handle.map(|result| {
-        if let Err(_e) = result {
-            // Log the error or handle it as necessary
+        if let Err(err) = result {
+            tracing::error!(err = ?err, "on_channel_store_end_error");
         }
     });
 
@@ -88,7 +94,19 @@ pub async fn start(
                 .service(task_server.clone());
 
             std::future::ready(Ok::<_, Infallible>(tower::service_fn(
-                move |req: hyper::Request<hyper::Body>| core.call(req),
+                move |req: hyper::Request<hyper::Body>| {
+                    let span = span!(
+                        Level::INFO,
+                        "rpc",
+                        method = ?req.method(),
+                        uri = ?req.uri(),
+                        headers = ?req.headers()
+                    );
+
+                    info!("rpc_request_received");
+
+                    core.call(req).instrument(span)
+                },
             )))
         }))
         .with_graceful_shutdown(on_channel_store_end);
@@ -96,8 +114,8 @@ pub async fn start(
     let handle = RpcServerHandle::new(
         shutdown_tx,
         shutdown_complete.map(|result| {
-            if let Err(_err) = result {
-                // Log the error or handle it as necessary
+            if let Err(err) = result {
+                tracing::error!(err = ?err, "shutdown_complete_error");
             }
         }),
     );

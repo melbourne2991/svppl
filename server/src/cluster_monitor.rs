@@ -54,6 +54,7 @@ impl ClusterState {
     }
 }
 
+#[derive(Debug)]
 pub struct ClusterMonitorConfig {
     pub listen_addr: SocketAddr,
     pub public_addr: SocketAddr,
@@ -106,12 +107,13 @@ impl ClusterMonitor {
                 let added = self.live_nodes.difference(&prev);
                 let removed = prev.difference(&self.live_nodes);
 
-                tx.send(ClusterStateChange {
+                if let Err(err) = tx.send(ClusterStateChange {
                     added: added.map(|node| node.0.clone()).collect(),
                     removed: removed.map(|node| node.0.clone()).collect(),
                     state: cs,
-                })
-                .unwrap();
+                }) {
+                    // handle error
+                }
             }
         }
 

@@ -1980,6 +1980,7 @@ dependencies = [
  "tonic",
  "tonic-build",
  "tower",
+ "tracing",
  "warp",
 ]
 

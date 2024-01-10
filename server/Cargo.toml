@@ -30,6 +30,7 @@ tonic = {version = "0.10.2", features = ["transport"]}
 tower = { version = "0.4.7" }
 warp = "0.3.6"
 siphasher = "1.0.0"
+tracing = "0.1.40"
 
 [dev-dependencies]
 assert_cmd = "2.0.12"

@@ -8,17 +8,18 @@ use std::{
 };
 
 use crate::{
-    cluster_monitor::{ClusterNodeIdEq, ClusterStateChange, ClusterNodeKey},
+    cluster_monitor::{ClusterNodeIdEq, ClusterNodeKey, ClusterStateChange},
     partition_resolver::PartitionResolver,
 };
 
 use futures::future::BoxFuture;
+use hyper::body::HttpBody;
 use tokio::sync::RwLock;
 use tonic::body::BoxBody;
 use tonic::transport::channel::Channel;
 use tonic::transport::Body;
 use tower::Service;
-use hyper::body::HttpBody;
+use tracing::{span, Instrument, Level};
 
 pub struct PartitionRouter<S> {
     channel_store: PartitionChannelStore,
@@ -61,7 +62,9 @@ where
 
         Box::pin(async move {
             let meta = tonic::metadata::MetadataMap::from_headers(req.headers().clone());
-            let maybe_channel = if let Some(key) = meta.get("partition_key") {
+            let partition_key = meta.get("partition_key");
+
+            let maybe_channel = if let Some(key) = partition_key {
                 channel_store
                     .get_channel(key.as_bytes())
                     .await
@@ -81,7 +84,10 @@ where
                     .boxed_unsync();
 
                 let req_boxed = hyper::Request::from_parts(parts, boxed);
-                let res = channel.call(req_boxed).await;
+                let res = channel
+                    .call(req_boxed)
+                    .instrument(span!(Level::INFO, "external_rpc", partition_key =? partition_key))
+                    .await;
 
                 match res {
                     Ok(res) => {
@@ -110,7 +116,10 @@ where
                     }
                 }
             } else {
-                inner.call(req).await?
+                inner
+                    .call(req)
+                    .instrument(span!(Level::INFO, "internal_rpc"))
+                    .await?
             };
 
             Ok(response)
@@ -145,7 +154,7 @@ where
 pub struct PartitionChannelStore {
     partition_resolver: Arc<RwLock<PartitionResolver>>,
     channel_map: Arc<RwLock<HashMap<ClusterNodeIdEq, (SocketAddr, Channel)>>>,
-    self_node_id: ClusterNodeKey
+    self_node_id: ClusterNodeKey,
 }
 
 impl PartitionChannelStore {
