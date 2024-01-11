@@ -1,14 +1,14 @@
-use super::common::{TaskId, TaskQueue};
+use super::common::{TaskId, TaskQueue, TaskProcessor, TaskData};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::Future;
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use sqlx::{Executor, QueryBuilder, Row};
-pub struct PostgresPersistence {
+pub struct PersistencePostgres {
     pool: Pool<Postgres>,
 }
 
-impl PostgresPersistence {
+impl PersistencePostgres {
     pub fn new(pool: Pool<Postgres>) -> Self {
         Self { pool }
     }
@@ -27,7 +27,7 @@ impl PostgresPersistence {
                 status SMALLINT NOT NULL,
                 scheduled_at BIGINT NOT NULL DEFAULT 0,
                 deadline_at BIGINT,
-                PRIMARY KEY (queue_id, partition_id, id)
+                PRIMARY KEY (queue_id, partition_id, seq_id)
             );
             "#,
         )
@@ -56,157 +56,17 @@ impl PostgresPersistence {
 
         Ok(())
     }
-
-    pub async fn handle_next_tasks<F, Fut>(
-        &self,
-        queue_id: &str,
-        partition_id: i16,
-        count: i64,
-        callback: F,
-    ) -> Result<()>
-    where
-        F: Fn(Vec<u8>) -> Fut,
-        Fut: Future<Output = Result<()>>,
-    {
-        let mut tx = self.pool.begin().await?;
-
-        let rows = sqlx::query(
-            r#"
-            SELECT payload
-            FROM svppl_task
-            WHERE queue_id = $1
-            AND partition_id = $2
-            AND status = 0
-            ORDER BY seq_id ASC, scheduled_at ASC
-            LIMIT $3
-            SKIP LOCKED
-            FOR UPDATE;
-            "#,
-        )
-        .bind(queue_id)
-        .bind(partition_id)
-        .bind(count)
-        .fetch_all(&mut *tx)
-        .await?;
-
-        let mut futures = Vec::new();
-
-        for row in rows {
-            let payload: Vec<u8> = row.try_get(0)?;
-            let future = callback(payload);
-            futures.push(future);
-        }
-
-        let results = futures::future::join_all(futures).await;
-
-        for result in results {
-            result?; // Handle each result or error
-        }
-
-        tx.commit().await?;
-
-        Ok(())
-    }
-
-    pub async fn batch_insert_task(
-        &self,
-        queue_id: &str,
-        partition_id: i16,
-        payloads: Vec<&[u8]>,
-    ) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-
-        for payload in payloads {
-            PostgresPersistence::tx_insert_task(&mut tx, queue_id, partition_id, payload).await?;
-        }
-
-        tx.commit().await?;
-
-        Ok(())
-    }
-
-    pub async fn insert_task(
-        &self,
-        queue_id: &str,
-        partition_id: i16,
-        payload: &[u8],
-    ) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-
-        PostgresPersistence::tx_insert_task(&mut tx, queue_id, partition_id, payload).await?;
-
-        tx.commit().await?;
-
-        Ok(())
-    }
-
-    async fn tx_insert_task(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        queue_id: &str,
-        partition_id: i16,
-        payload: &[u8],
-    ) -> Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO svppl_task (queue_id, partition_id, payload, status)
-            VALUES ($1, $2, $3, 0)
-            RETURNING seq_id
-            "#,
-        )
-        .bind(queue_id)
-        .bind(partition_id)
-        .bind(payload)
-        .execute(&mut **tx)
-        .await?;
-
-        Ok(())
-    }
-
-    pub async fn query_tasks(
-        &self,
-        queue_id: &str,
-        partition_id: i16,
-        status: i16,
-        count: i64,
-    ) -> Result<Vec<Vec<u8>>> {
-        let rows = sqlx::query(
-            r#"
-            SELECT payload
-            FROM svppl_task
-            WHERE queue_id = $1
-            AND partition_id = $2
-            AND status = $3
-            ORDER BY id ASC, scheduled_at ASC
-            LIMIT $4
-            "#,
-        )
-        .bind(queue_id)
-        .bind(partition_id)
-        .bind(status)
-        .bind(count)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut payloads = Vec::new();
-
-        for row in rows {
-            let payload: Vec<u8> = row.try_get(0)?;
-            payloads.push(payload);
-        }
-
-        Ok(payloads)
-    }
 }
 
 #[async_trait]
-impl TaskQueue for PostgresPersistence {
+impl TaskQueue for PersistencePostgres {
     async fn enqueue_tasks(
         &self,
         queue_id: &str,
         partition_id: i16,
         payloads: Vec<&[u8]>,
     ) -> Result<Vec<TaskId>> {
-        let conn = self.pool.acquire().await?;
+        let mut conn = self.pool.acquire().await?;
 
         let mut query_builder =
             QueryBuilder::new("INSERT INTO svppl_task (queue_id, partition_id, payload, status) ");
@@ -242,7 +102,100 @@ impl TaskQueue for PostgresPersistence {
         }
     }
 
-    
+    async fn process_tasks<T: TaskProcessor>(&self, queue_id: &str, partition_id: i16, count: i64, task_processor: &T) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+
+        let rows = sqlx::query(
+            r#"
+            SELECT seq_id, payload, scheduled_at, deadline_at
+            FROM svppl_task
+            WHERE queue_id = $1
+            AND partition_id = $2
+            AND status = 0
+            ORDER BY seq_id ASC, scheduled_at ASC
+            LIMIT $3
+            SKIP LOCKED
+            FOR UPDATE;
+            "#,
+        )
+        .bind(queue_id)
+        .bind(partition_id)
+        .bind(count)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let mut futures = Vec::new();
+
+        for row in rows {
+            let seq_id: i64 = row.try_get(0)?;
+            let payload: Vec<u8> = row.try_get(1)?;
+            let scheduled_at: i64 = row.try_get(2)?;
+            let deadline_at: Option<i64> = row.try_get(3)?;
+
+            let future = task_processor.process_task(TaskData {
+                task_id: TaskId::from_parts(queue_id, partition_id, seq_id),
+                payload: payload,
+                scheduled_at,
+                deadline_at,
+            });
+
+            futures.push(future);
+        }
+
+        let results = futures::future::join_all(futures).await;
+
+        for result in results {
+            result?; // Handle each result or error
+        }
+
+        tx.commit().await?;
+
+        Ok(())
+    }
+
+    async fn query_tasks(
+        &self,
+        queue_id: &str,
+        partition_id: i16,
+        status: i16,
+        count: i64,
+    ) -> Result<Vec<TaskData>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT seq_id, payload, scheduled_at, deadline_at
+            FROM svppl_task
+            WHERE queue_id = $1
+            AND partition_id = $2
+            AND status = $3
+            ORDER BY seq_id ASC, scheduled_at ASC
+            LIMIT $4
+            "#,
+        )
+        .bind(queue_id)
+        .bind(partition_id)
+        .bind(status)
+        .bind(count)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut tasks = Vec::new();
+
+        for row in rows {
+            let seq_id: i64 = row.try_get(0)?;
+            let payload: Vec<u8> = row.try_get(1)?;
+            let scheduled_at: i64 = row.try_get(2)?;
+            let deadline_at: Option<i64> = row.try_get(3)?;
+
+            tasks.push(TaskData {
+                task_id: TaskId::from_parts(queue_id, partition_id, seq_id),
+                payload: payload,
+                scheduled_at,
+                deadline_at,
+            });
+        }
+
+        Ok(tasks)
+    }
 }
 
 pub async fn create_connection_pool(url: &str) -> Result<sqlx::PgPool> {

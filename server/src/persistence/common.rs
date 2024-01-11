@@ -22,12 +22,14 @@ impl TaskId {
 
 pub type TaskPayload = Vec<u8>;
 
+#[derive(Debug, Clone)]
 pub struct TaskData {
-    task_id: TaskId,
-    payload: TaskPayload,
-    scheduled_at: i64,
-    deadline_at: Option<i64>,
+    pub task_id: TaskId,
+    pub payload: TaskPayload,
+    pub scheduled_at: i64,
+    pub deadline_at: Option<i64>,
 }
+
 
 #[async_trait]
 pub trait TaskQueue {
@@ -38,16 +40,13 @@ pub trait TaskQueue {
         payloads: Vec<&[u8]>,
     ) -> Result<Vec<TaskId>>;
 
-    async fn process_tasks<F, Fut>(
+    async fn process_tasks<T: TaskProcessor + Sync>(
         &self,
         queue_id: &str,
         partition_id: i16,
         count: i64,
-        callback: F,
-    ) -> Result<()>
-    where
-        F: Fn(TaskData) -> Fut,
-        Fut: Future<Output = Result<()>>;
+        task_processor: &T,
+    ) -> Result<()>;
 
     async fn query_tasks(
         &self,
@@ -56,4 +55,10 @@ pub trait TaskQueue {
         status: i16,
         count: i64,
     ) -> Result<Vec<TaskData>>;
+}
+
+
+#[async_trait]
+pub trait TaskProcessor: Sync {
+    async fn process_task(&self, task: TaskData) -> Result<()>;
 }
