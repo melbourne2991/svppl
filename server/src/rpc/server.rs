@@ -1,8 +1,8 @@
 use futures::{Future, FutureExt};
-use tracing::Instrument;
-use tracing::Level;
 use tracing::info;
 use tracing::span;
+use tracing::Instrument;
+use tracing::Level;
 
 use std::{convert::Infallible, net::SocketAddr};
 use tokio::sync::oneshot;
@@ -50,7 +50,6 @@ pub async fn start(
     listen_addr: SocketAddr,
     cluster_monitor: &mut cluster_monitor::ClusterMonitor,
 ) -> RpcServerHandle {
-
     let task_service = TaskService::default();
     let task_server = TaskServer::new(task_service);
 
