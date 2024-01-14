@@ -1,24 +1,16 @@
 use std::{
-    collections::HashMap,
     convert::Infallible,
     error::Error,
-    net::SocketAddr,
-    sync::Arc,
     task::{Context, Poll},
 };
 
-use crate::{
-    cluster_monitor::{
-        self, ClusterMonitor, ClusterNodeId, ClusterStateChange, ClusterStateChangeset,
-    },
-    partition_resolver::PartitionResolver,
-};
+use crate::partition_resolver::PartitionResolver;
 
 use futures::future::BoxFuture;
 use hyper::body::HttpBody;
-use tokio::sync::RwLock;
+
 use tonic::body::BoxBody;
-use tonic::transport::channel::Channel;
+
 use tonic::transport::Body;
 use tower::Service;
 use tracing::{span, Instrument, Level};

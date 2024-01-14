@@ -1,7 +1,7 @@
-use super::common::{TaskId, TaskQueue, TaskProcessor, TaskData};
+use super::common::{TaskData, TaskId, TaskProcessor, TaskQueue};
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::Future;
+
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use sqlx::{Executor, QueryBuilder, Row};
 pub struct PersistencePostgres {
@@ -102,7 +102,13 @@ impl TaskQueue for PersistencePostgres {
         }
     }
 
-    async fn process_tasks<T: TaskProcessor>(&self, queue_id: &str, partition_id: i16, count: i64, task_processor: &T) -> Result<()> {
+    async fn process_tasks<T: TaskProcessor>(
+        &self,
+        queue_id: &str,
+        partition_id: i16,
+        count: i64,
+        task_processor: &T,
+    ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
 
         let rows = sqlx::query(

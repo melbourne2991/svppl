@@ -1,9 +1,3 @@
-use turmoil::{
-    lookup,
-    net::{self, UdpSocket},
-    Builder, IpVersion, Result,
-};
-
 mod cluster_monitor_transport;
 
 #[test]

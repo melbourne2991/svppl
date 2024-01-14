@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use testcontainers::{Image, core::WaitFor};
+use testcontainers::{core::WaitFor, Image};
 
 #[derive(Debug)]
 pub struct PostgresImage {

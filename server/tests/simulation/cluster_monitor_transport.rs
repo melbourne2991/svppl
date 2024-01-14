@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chitchat::serialize::Serializable;
 use chitchat::{
     transport::{Socket, Transport},
-    ChitchatMessage
+    ChitchatMessage,
 };
 use std::net::SocketAddr;
 

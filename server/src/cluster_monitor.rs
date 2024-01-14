@@ -1,12 +1,10 @@
 use std::{
     collections::{btree_map::Entry, BTreeMap, HashSet},
     fmt::{Display, Formatter},
-    hash::{self, Hasher},
-    mem,
+    hash::Hasher,
     net::SocketAddr,
     sync::Arc,
     time::{Duration, SystemTime},
-    vec,
 };
 
 use anyhow::Result;
@@ -14,12 +12,9 @@ use chitchat::{
     spawn_chitchat, transport::UdpTransport, Chitchat, ChitchatConfig, ChitchatHandle, ChitchatId,
     ChitchatIdGenerationEq, FailureDetectorConfig, NodeState,
 };
-use futures::{StreamExt};
+use futures::StreamExt;
 use std::hash::Hash;
-use tokio::{
-    sync::{oneshot, watch::Receiver, Mutex, RwLock},
-    task::JoinHandle,
-};
+use tokio::sync::{watch::Receiver, Mutex, RwLock};
 use tokio_stream::wrappers::WatchStream;
 use tonic::transport::Channel;
 

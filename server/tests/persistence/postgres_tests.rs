@@ -1,9 +1,11 @@
 use crate::persistence::postgres_image::PostgresImage;
 use anyhow::Result;
 use nanoid::nanoid;
-use server_lib::persistence::{common::TaskQueue,postgres::{self, PersistencePostgres}};
-use testcontainers::{clients};
-
+use server_lib::persistence::{
+    common::TaskQueue,
+    postgres::{self, PersistencePostgres},
+};
+use testcontainers::clients;
 
 #[tokio::test]
 async fn insert_and_query_tasks() -> Result<()> {
@@ -33,12 +35,11 @@ async fn insert_and_query_tasks() -> Result<()> {
         )
         .await?;
 
-
     let tasks = store.query_tasks(queue_id.as_str(), 0, 0, 10).await?;
     let first = tasks.first().unwrap();
-    
+
     assert_eq!(tasks.len(), 10);
     assert_eq!(String::from_utf8(first.payload.clone())?, "payload 0");
-    
+
     Ok(())
 }

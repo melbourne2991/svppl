@@ -217,7 +217,9 @@ mod test {
         let mut hash_map: HashMap<String, usize> = HashMap::new();
 
         for item in 0..1000 {
-            let server_id = ch.get_str(format!("node_{}", item.to_string()).as_str()).unwrap();
+            let server_id = ch
+                .get_str(format!("node_{}", item.to_string()).as_str())
+                .unwrap();
             let count = hash_map.get(&server_id.name());
             let new_count = count.map_or(0, |c| c + 1);
             hash_map.insert(server_id.name(), new_count);
@@ -243,7 +245,7 @@ mod test {
 
         println!("std deviation: {stdev}");
 
-        assert!(stdev < 20.0);  
+        assert!(stdev < 20.0);
     }
 
     #[test]

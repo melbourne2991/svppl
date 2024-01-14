@@ -5,7 +5,7 @@ use tokio::task::JoinHandle;
 use tonic::transport::Channel;
 
 use crate::cluster_monitor::{
-    self, ClusterMonitor, ClusterNodeId, ClusterStateChange, ClusterStateChangeset,
+    ClusterMonitor, ClusterNodeId, ClusterStateChange, ClusterStateChangeset,
 };
 use crate::conhash::{ConsistentHash, DefaultBytesHasher, Node};
 use tokio_stream::StreamExt;
@@ -23,7 +23,7 @@ impl Node for ClusterNodeId {
 }
 
 impl PartitionResolver {
-    pub fn new(cluster_monitor: &ClusterMonitor, replica_count: usize, seed: (u64, u64)) -> Self {
+    pub fn new(cluster_monitor: &ClusterMonitor, _replica_count: usize, _seed: (u64, u64)) -> Self {
         Self {
             cluster_monitor: cluster_monitor.clone(),
             conhash: Arc::new(RwLock::new(ConsistentHash::<
@@ -74,7 +74,7 @@ impl PartitionResolver {
 pub struct PartitionResolverHandle {
     partition_resolver: PartitionResolver,
     shutdown_tx: tokio::sync::oneshot::Sender<()>,
-    join_handle: JoinHandle<()>
+    join_handle: JoinHandle<()>,
 }
 
 impl PartitionResolverHandle {
