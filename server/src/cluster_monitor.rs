@@ -1,56 +1,82 @@
 use std::{
-    collections::{BTreeMap, HashSet},
-    hash::Hasher,
+    collections::{btree_map::Entry, BTreeMap, HashSet},
+    fmt::{Display, Formatter},
+    hash::{self, Hasher},
+    mem,
     net::SocketAddr,
     sync::Arc,
     time::{Duration, SystemTime},
+    vec,
 };
 
 use anyhow::Result;
 use chitchat::{
     spawn_chitchat, transport::UdpTransport, Chitchat, ChitchatConfig, ChitchatHandle, ChitchatId,
-    FailureDetectorConfig, NodeState,
+    ChitchatIdGenerationEq, ChitchatIdNodeEq, FailureDetectorConfig, NodeState,
 };
-use futures::StreamExt;
+use futures::{Future, StreamExt};
 use std::hash::Hash;
-use tokio::sync::Mutex;
+use tokio::{
+    sync::{oneshot, watch::Receiver, Mutex, RwLock},
+    task::JoinHandle,
+};
 use tokio_stream::wrappers::WatchStream;
+use tonic::transport::Channel;
 
-#[derive(Clone, Eq, PartialEq, Hash)]
-pub struct ClusterNodeKey(ChitchatId);
+pub(crate) const GRPC_ENDPOINT_KEY: &str = "grpc_endpoint";
 
-impl ClusterNodeKey {
-    pub fn node_id(&self) -> &String {
-        &self.0.node_id
-    }
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ClusterNodeId(pub String);
 
-    pub fn eq_node_id(&self, other: &ClusterNodeKey) -> bool {
-        self.node_id().eq(other.node_id())
+impl Display for ClusterNodeId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
 #[derive(Clone, Default)]
-pub struct ClusterState(BTreeMap<ChitchatId, NodeState>);
+pub struct ClusterState(BTreeMap<ChitchatIdGenerationEq, NodeState>);
 
-pub struct ClusterNode<'a>(&'a NodeState);
+#[derive(Clone)]
+pub struct ClusterNode {
+    chitchat_id: ChitchatId,
+    grpc_endpoint: SocketAddr,
+    grpc_channel: Channel,
+    generation_id: u64,
+}
 
-impl<'a> ClusterNode<'a> {
-    pub fn grpc_addr(&self) -> Result<SocketAddr> {
-        let maybe_endpoint_str = self.0.get("grpc_endpoint");
-        let endpoint_str = maybe_endpoint_str.ok_or(anyhow::anyhow!("grpc_endpoint not found"))?;
-        let endpoint = endpoint_str.parse::<SocketAddr>()?;
+impl ClusterNode {
+    pub fn try_new(chitchat_id: &ChitchatId, node_state: &NodeState) -> Result<Self> {
+        let grpc_endpoint_str = node_state
+            .get(GRPC_ENDPOINT_KEY)
+            .ok_or_else(|| anyhow::anyhow!("grpc_endpoint not found"))?;
 
-        Ok(endpoint)
+        let grpc_endpoint = grpc_endpoint_str.parse::<SocketAddr>()?;
+
+        let grpc_channel = Channel::from_shared(grpc_endpoint.to_string())
+            .map_err(|e| anyhow::anyhow!("failed to create channel: {}", e))?
+            .connect_lazy();
+
+        Ok(Self {
+            chitchat_id: chitchat_id.clone(),
+            grpc_channel,
+            grpc_endpoint,
+            generation_id: chitchat_id.generation_id,
+        })
+    }
+
+    pub fn node_id(&self) -> ClusterNodeId {
+        ClusterNodeId(self.chitchat_id.node_id.clone())
+    }
+
+    pub fn grpc_channel(&self) -> Channel {
+        self.grpc_channel.clone()
     }
 }
 
 impl ClusterState {
-    pub fn keys(&self) -> impl Iterator<Item = ClusterNodeKey> + '_ {
-        self.0.keys().map(|key| ClusterNodeKey(key.clone()))
-    }
-
-    pub fn get(&self, key: &ClusterNodeKey) -> Option<ClusterNode> {
-        self.0.get(&key.0).map(|ns| ClusterNode(ns))
+    pub fn keys(&self) -> impl Iterator<Item = &ChitchatIdGenerationEq> {
+        self.0.keys()
     }
 }
 
@@ -65,70 +91,193 @@ pub struct ClusterMonitorConfig {
     pub initial_kv: Vec<(String, String)>,
 }
 
+#[derive(Clone)]
 pub struct ClusterMonitor {
     chitchat: Arc<Mutex<Chitchat>>,
-    live_nodes: HashSet<ClusterNodeIdEq>,
+    nodes: Arc<RwLock<BTreeMap<ClusterNodeId, ClusterNode>>>,
+    prev_states: Arc<RwLock<BTreeMap<ChitchatIdGenerationEq, NodeState>>>,
+    change_rx: Arc<Mutex<Option<Receiver<Vec<ClusterStateChange>>>>>,
+}
+
+pub struct ClusterMonitorHandle {
+    chitchat_handle: ChitchatHandle,
+    cluster_monitor: ClusterMonitor,
+}
+
+impl ClusterMonitorHandle {
+    pub async fn shutdown(self) -> Result<()> {
+        let chitchat_handle = self.chitchat_handle;
+        chitchat_handle.shutdown().await
+    }
+
+    pub fn cluster_monitor(&self) -> ClusterMonitor {
+        self.cluster_monitor.clone()
+    }
 }
 
 #[derive(Clone)]
-pub struct ClusterStateChange {
-    pub added: Vec<ClusterNodeKey>,
-    pub removed: Vec<ClusterNodeKey>,
-    pub state: ClusterState,
+pub enum ClusterStateChange {
+    Added(ClusterNode),
+    Removed(ClusterNode),
+    Updated(ClusterNode),
+}
+
+pub type ClusterStateChangeset = Vec<ClusterStateChange>;
+
+#[async_trait::async_trait]
+pub trait ClusterStateChangeListener {
+    async fn on_cluster_state_change(&mut self, changeset: ClusterStateChangeset);
 }
 
 impl ClusterMonitor {
     pub fn new(chitchat: Arc<Mutex<Chitchat>>) -> Self {
         Self {
             chitchat,
-            live_nodes: HashSet::new(),
+            nodes: Arc::new(RwLock::new(BTreeMap::new())),
+            prev_states: Arc::new(RwLock::new(BTreeMap::new())),
+            change_rx: Arc::new(Mutex::new(None)),
         }
     }
 
-    pub async fn watch(&mut self) -> WatchStream<ClusterStateChange> {
+    pub async fn watch(&self) -> WatchStream<Vec<ClusterStateChange>> {
+        let guard = self.change_rx.lock().await;
+
+        match &*guard {
+            Some(rx) => WatchStream::new(rx.clone()),
+            None => {
+                let rx = self.make_watch().await;
+                *self.change_rx.lock().await = Some(rx.clone());
+                WatchStream::new(rx)
+            }
+        }
+    }
+
+    pub async fn make_watch(&self) -> Receiver<Vec<ClusterStateChange>> {
         let locked = self.chitchat.lock().await;
-        let mut changes = locked.live_nodes_watcher().map(|tree| ClusterState(tree));
 
-        let (tx, rx) = tokio::sync::watch::channel(ClusterStateChange {
-            added: Vec::new(),
-            removed: Vec::new(),
-            state: ClusterState::default(),
-        });
+        let mut changes = locked.live_nodes_watcher();
+        let (tx, rx) = tokio::sync::watch::channel(Vec::new());
 
-        while let Some(cs) = changes.next().await {
-            let prev = self.live_nodes.clone();
-            self.live_nodes.clear();
+        while let Some(next_states) = changes.next().await {
+            let prev_states = self.prev_states.write().await;
+            let mut nodes = self.nodes.write().await;
 
-            cs.keys().for_each(|key| {
-                self.live_nodes.insert(ClusterNodeIdEq(key));
+            let mut mapped_changes: Vec<ClusterStateChange> = Vec::new();
+
+            let prev_keys = prev_states.keys().collect::<HashSet<_>>();
+            let new_keys = next_states.keys().collect::<HashSet<_>>();
+
+            let added_keys = new_keys.difference(&prev_keys).collect::<Vec<_>>();
+            let removed_keys = prev_keys.difference(&new_keys).collect::<Vec<_>>();
+            let unchanged_keys = prev_keys.intersection(&new_keys).collect::<Vec<_>>();
+
+            let updated_keys = unchanged_keys.into_iter().filter(|key| {
+                let maybe_prev_node_state = prev_states.get(&key);
+                let maybe_next_node_state = next_states.get(&key);
+
+                match (maybe_prev_node_state, maybe_next_node_state) {
+                    (Some(prev_node_state), Some(next_node_state)) => {
+                        prev_node_state.max_version() != next_node_state.max_version()
+                    }
+                    _ => {
+                        tracing::error!("prev_node_state_is_none");
+                        false
+                    }
+                }
             });
 
-            if self.live_nodes != prev {
-                let added = self.live_nodes.difference(&prev);
-                let removed = prev.difference(&self.live_nodes);
+            for added in added_keys {
+                let node_id = ClusterNodeId(added.0.node_id.clone());
+                let maybe_entry = nodes.entry(node_id.clone());
 
-                if let Err(err) = tx.send(ClusterStateChange {
-                    added: added.map(|node| node.0.clone()).collect(),
-                    removed: removed.map(|node| node.0.clone()).collect(),
-                    state: cs,
-                }) {
-                    // handle error
+                if let Entry::Occupied(entry) = maybe_entry {
+                    let prev_node = entry.get();
+
+                    if added.0.generation_id < prev_node.generation_id {
+                        let dead_node_ip = added.0.gossip_advertise_addr.ip();
+
+                        // A node chitchat considered dead has been resurrected.
+                        tracing::warn!(node_id=%node_id, node_ip=%dead_node_ip, "dead_node_resurrected");
+
+                        // Ignore this node.
+                        continue;
+                    }
                 }
+
+                let created_node = next_states
+                    .get(added)
+                    .map(|next_node_state| ClusterNode::try_new(&added.0, next_node_state))
+                    .ok_or_else(|| anyhow::anyhow!("next_states must contain key"))
+                    .and_then(|inner| inner);
+
+                match created_node {
+                    Ok(node) => {
+                        nodes.insert(ClusterNodeId(added.0.node_id.clone()), node.clone());
+                        mapped_changes.push(ClusterStateChange::Added(node));
+                    }
+                    Err(err) => {
+                        tracing::error!(err = ?err, "cluster_node_creation_failed");
+                        continue;
+                    }
+                }
+            }
+
+            for updated in updated_keys {
+                let updated_node = next_states
+                    .get(&updated)
+                    .map(|next_node_state| ClusterNode::try_new(&updated.0, next_node_state))
+                    .ok_or_else(|| anyhow::anyhow!("next_states must contain key"))
+                    .and_then(|inner| inner);
+
+                match updated_node {
+                    Ok(node) => {
+                        nodes.insert(ClusterNodeId(updated.0.node_id.clone()), node.clone());
+                        mapped_changes.push(ClusterStateChange::Updated(node));
+                    }
+                    Err(err) => {
+                        tracing::error!(err = ?err, "cluster_node_creation_failed");
+                        continue;
+                    }
+                }
+            }
+
+            for removed in removed_keys {
+                let node_id = ClusterNodeId(removed.0.node_id.clone());
+                let maybe_entry = nodes.entry(node_id.clone());
+
+                if let Entry::Occupied(entry) = maybe_entry {
+                    let previous_node = entry.remove();
+
+                    if previous_node.generation_id == removed.0.generation_id {
+                        mapped_changes.push(ClusterStateChange::Removed(previous_node));
+                    }
+                }
+            }
+
+            if let Err(send_err) = tx.send(mapped_changes) {
+                tracing::error!(err = ?send_err, "cluster_state_change_send_failed");
             }
         }
 
-        tokio_stream::wrappers::WatchStream::new(rx)
+        rx
     }
 
-    pub async fn self_key(&mut self) -> ClusterNodeKey {
+    pub async fn self_id(&mut self) -> ClusterNodeId {
         let locked = self.chitchat.lock().await;
-        ClusterNodeKey(locked.self_chitchat_id().clone())
+        ClusterNodeId(locked.self_chitchat_id().node_id.clone())
+    }
+
+    pub async fn get_node_channel(&self, node_id: &ClusterNodeId) -> Result<Channel> {
+        let locked_nodes = self.nodes.read().await;
+
+        locked_nodes
+            .get(node_id)
+            .map(|node| node.grpc_channel())
+            .ok_or_else(|| anyhow::anyhow!("node not found: {}", node_id))
     }
 }
 
-pub async fn start_gossip(
-    config: ClusterMonitorConfig,
-) -> Result<(ClusterMonitor, ChitchatHandle)> {
+pub async fn start(config: ClusterMonitorConfig) -> Result<ClusterMonitorHandle> {
     let generation = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
@@ -151,22 +300,30 @@ pub async fn start_gossip(
     let chitchat: std::sync::Arc<tokio::sync::Mutex<chitchat::Chitchat>> =
         chitchat_handle.chitchat();
 
-    Ok((ClusterMonitor::new(chitchat), chitchat_handle))
+    Ok(ClusterMonitorHandle {
+        chitchat_handle,
+        cluster_monitor: ClusterMonitor::new(chitchat),
+    })
 }
 
-#[derive(Clone)]
-pub struct ClusterNodeIdEq(pub ClusterNodeKey);
+// pub async fn bind_cluster_state_change(
+//     monitor: &mut ClusterMonitor,
+//     mut listener: impl ClusterStateChangeListener + Send + 'static,
+//     mut rx_shutdown_signal: oneshot::Receiver<()>,
+// ) -> JoinHandle<()> {
+//     let mut changes = monitor.watch().await.unwrap();
 
-impl PartialEq for ClusterNodeIdEq {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.node_id() == other.0.node_id()
-    }
-}
+//     tokio::spawn(async move {
+//         loop {
+//             tokio::select! {
+//                 _ = &mut rx_shutdown_signal => {
+//                     break;
+//                 },
 
-impl Eq for ClusterNodeIdEq {}
-
-impl Hash for ClusterNodeIdEq {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.node_id().hash(state);
-    }
-}
+//                 Some(changeset) = changes.next() => {
+//                     &listener.on_cluster_state_change(changeset).await;
+//                 }
+//             }
+//         }
+//     })
+// }

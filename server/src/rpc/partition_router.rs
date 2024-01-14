@@ -8,7 +8,9 @@ use std::{
 };
 
 use crate::{
-    cluster_monitor::{ClusterNodeIdEq, ClusterNodeKey, ClusterStateChange},
+    cluster_monitor::{
+        self, ClusterMonitor, ClusterNodeId, ClusterStateChange, ClusterStateChangeset,
+    },
     partition_resolver::PartitionResolver,
 };
 
@@ -22,7 +24,8 @@ use tower::Service;
 use tracing::{span, Instrument, Level};
 
 pub struct PartitionRouter<S> {
-    channel_store: PartitionChannelStore,
+    partition_resolver: PartitionResolver,
+    // cluster_monitor: ClusterMonitor,
     inner_service: S,
 }
 
@@ -30,9 +33,14 @@ impl<S> PartitionRouter<S>
 where
     S: Service<hyper::Request<Body>>,
 {
-    pub fn new(channel_store: PartitionChannelStore, inner_service: S) -> Self {
+    pub fn new(
+        // cluster_monitor: ClusterMonitor,
+        partition_resolver: PartitionResolver,
+        inner_service: S,
+    ) -> Self {
         Self {
-            channel_store: channel_store,
+            // cluster_monitor,
+            partition_resolver,
             inner_service,
         }
     }
@@ -58,17 +66,15 @@ where
     fn call(&mut self, req: hyper::Request<Body>) -> Self::Future {
         let clone = self.inner_service.clone();
         let mut inner = std::mem::replace(&mut self.inner_service, clone);
-        let channel_store = self.channel_store.clone();
+
+        let partition_resolver = self.partition_resolver.clone();
 
         Box::pin(async move {
             let meta = tonic::metadata::MetadataMap::from_headers(req.headers().clone());
             let partition_key = meta.get("partition_key");
 
             let maybe_channel = if let Some(key) = partition_key {
-                channel_store
-                    .get_channel(key.as_bytes())
-                    .await
-                    .map(|channel| channel.clone())
+                partition_resolver.resolve(key.as_bytes()).await
             } else {
                 None
             };
@@ -129,12 +135,16 @@ where
 
 #[derive(Clone)]
 pub struct PartitionRoutingLayer {
-    channel_store: PartitionChannelStore,
+    // cluster_monitor: ClusterMonitor,
+    partition_resolver: PartitionResolver,
 }
 
 impl PartitionRoutingLayer {
-    pub fn new(channel_store: PartitionChannelStore) -> Self {
-        Self { channel_store }
+    pub fn new(partition_resolver: PartitionResolver) -> Self {
+        Self {
+            // cluster_monitor,
+            partition_resolver,
+        }
     }
 }
 
@@ -146,80 +156,96 @@ where
     type Service = PartitionRouter<T>;
 
     fn layer(&self, inner: T) -> Self::Service {
-        PartitionRouter::new(self.channel_store.clone(), inner)
+        PartitionRouter::new(
+            // self.cluster_monitor.clone(),
+            self.partition_resolver.clone(),
+            inner,
+        )
     }
 }
 
-#[derive(Clone)]
-pub struct PartitionChannelStore {
-    partition_resolver: Arc<RwLock<PartitionResolver>>,
-    channel_map: Arc<RwLock<HashMap<ClusterNodeIdEq, (SocketAddr, Channel)>>>,
-    self_node_id: ClusterNodeKey,
-}
+// #[derive(Clone)]
+// pub struct PartitionChannelStore {
+//     partition_resolver: Arc<RwLock<PartitionResolver>>,
+//     self_node_id: ClusterNodeId,
+// }
 
-impl PartitionChannelStore {
-    pub fn new(self_node_id: ClusterNodeKey) -> Self {
-        Self {
-            self_node_id,
-            channel_map: Arc::new(RwLock::new(HashMap::new())),
-            partition_resolver: Arc::new(RwLock::new(PartitionResolver::new(50, (0, 0)))),
-        }
-    }
+// impl PartitionChannelStore {
+//     pub fn new(self_node_id: ClusterNodeId) -> Self {
+//         Self {
+//             self_node_id,
 
-    pub async fn sync(&mut self, change: &ClusterStateChange) -> anyhow::Result<()> {
-        self.partition_resolver.write().await.sync(&change).await;
+//             partition_resolver: Arc::new(RwLock::new(PartitionResolver::new(50, (0, 0)))),
+//         }
+//     }
 
-        for key in change.state.keys() {
-            // skip self
-            if key.eq_node_id(&self.self_node_id) {
-                continue;
-            }
+//     pub async fn sync(&mut self, changes: ClusterStateChangeset) -> anyhow::Result<()> {
+//         self.partition_resolver.write().await.sync(&changes).await;
 
-            let node = change
-                .state
-                .get(&key)
-                .ok_or_else(|| anyhow::anyhow!("node does not exist for key"))?;
+//         for change in changes {
+//             match change {
+//                 ClusterStateChange::Added(node) => {
+//                     if node.node_id() == self.self_node_id {
+//                         continue;
+//                     }
 
-            let node_eq_key = ClusterNodeIdEq(key.clone());
-            let latest_addr = node.grpc_addr()?;
+//                     match self.init_channel(latest_addr) {
+//                         Ok(channel) => {
+//                             self.channel_map
+//                                 .write()
+//                                 .await
+//                                 .insert(node.node_id(), channel);
+//                         }
+//                         Err(err) => {
+//                             tracing::error!(err=?err, "channel_init_failed")
+//                         }
+//                     }
+//                 }
+//                 ClusterStateChange::Removed(node) => {
+//                     self.channel_map.write().await.remove(&node.node_id());
+//                 }
+//                 ClusterStateChange::Updated(node) => {
+//                     let latest_addr = node.grpc_endpoint();
+//                     let node_id = &node.node_id();
 
-            if let Some((addr, _)) = self.channel_map.read().await.get(&node_eq_key) {
-                if latest_addr == *addr {
-                    continue;
-                }
-            }
+//                     if let Some((addr, _)) = self.channel_map.read().await.get(node_id) {
+//                         if latest_addr == *addr {
+//                             continue;
+//                         }
+//                     }
 
-            match self.init_channel(latest_addr) {
-                Ok(channel) => {
-                    self.channel_map
-                        .write()
-                        .await
-                        .insert(node_eq_key, (latest_addr, channel));
-                }
-                Err(_e) => {
-                    // TODO: log error
-                }
-            }
-        }
+//                     match self.init_channel(latest_addr) {
+//                         Ok(channel) => {
+//                             self.channel_map
+//                                 .write()
+//                                 .await
+//                                 .insert(node_id.clone(), (latest_addr, channel));
+//                         }
+//                         Err(err) => {
+//                             tracing::error!(err=?err, "channel_init_failed")
+//                         }
+//                     }
+//                 }
+//             }
+//         }
 
-        Ok(())
-    }
+//         Ok(())
+//     }
 
-    fn init_channel(&self, addr: SocketAddr) -> anyhow::Result<Channel> {
-        let channel = Channel::from_shared(addr.to_string())
-            .map_err(|e| anyhow::anyhow!("failed to create channel: {}", e))?
-            .connect_lazy();
+//     fn init_channel(&self, addr: SocketAddr) -> anyhow::Result<Channel> {
+//         let channel = Channel::from_shared(addr.to_string())
+//             .map_err(|e| anyhow::anyhow!("failed to create channel: {}", e))?
+//             .connect_lazy();
 
-        Ok(channel)
-    }
+//         Ok(channel)
+//     }
 
-    pub async fn get_channel(&self, key: &[u8]) -> Option<Channel> {
-        let resolver = self.partition_resolver.read().await;
-        let node = resolver.resolve(key)?;
-        let node_eq_key = ClusterNodeIdEq(node.clone());
+//     pub async fn get_channel(&self, key: &[u8]) -> Option<Channel> {
+//         let resolver = self.partition_resolver.read().await;
+//         let node_id = resolver.resolve(key)?;
 
-        let cm = self.channel_map.read().await;
+//         let cm = self.channel_map.read().await;
 
-        cm.get(&node_eq_key).map(|(_, channel)| channel.clone())
-    }
-}
+//         cm.get(&node_id).map(|(_, channel)| channel.clone())
+//     }
+// }

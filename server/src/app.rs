@@ -1,8 +1,29 @@
-use crate::{cluster_monitor::ClusterMonitorConfig, resolve_addr};
+use crate::{
+    cluster_monitor::{ClusterMonitorConfig, ClusterMonitorHandle},
+    partition_resolver::{self, PartitionResolverHandle},
+    resolve_addr,
+    rpc::server::RpcServerHandle,
+};
 use anyhow::Context;
 use tracing::info;
 
-pub async fn start(opts: crate::opts::Opts) -> anyhow::Result<()> {
+pub struct AppHandle {
+    rpc_handle: RpcServerHandle,
+    cluster_monitor_handle: ClusterMonitorHandle,
+    partition_resolver_handle: PartitionResolverHandle,
+}
+
+impl AppHandle {
+    pub async fn shutdown(self) -> anyhow::Result<()> {
+        self.rpc_handle.shutdown().await?;
+        self.cluster_monitor_handle.shutdown().await?;
+        self.partition_resolver_handle.shutdown().await?;
+
+        Ok(())
+    }
+}
+
+pub async fn start(opts: crate::opts::Opts) -> anyhow::Result<AppHandle> {
     info!(opts = ?opts, "app_start");
 
     let gossip_public_addr =
@@ -22,12 +43,25 @@ pub async fn start(opts: crate::opts::Opts) -> anyhow::Result<()> {
     };
 
     info!("gossip_start");
-    let (mut cluster_monitor, _handle) = crate::cluster_monitor::start_gossip(config)
+
+    let cluster_monitor_handle = crate::cluster_monitor::start(config)
         .await
         .context("failed to start gossip api")?;
 
-    info!("rpc_server_start");
-    crate::rpc::server::start(opts.grpc_listen_addr, &mut cluster_monitor).await;
+    let partition_resolver_handle =
+        partition_resolver::start(&cluster_monitor_handle.cluster_monitor()).await;
 
-    Ok(())
+    let rpc_handle = crate::rpc::server::start(
+        opts.grpc_listen_addr,
+        partition_resolver_handle.partition_resolver(),
+    )
+    .await;
+
+    let app_handle = AppHandle {
+        rpc_handle,
+        cluster_monitor_handle,
+        partition_resolver_handle,
+    };
+
+    Ok(app_handle)
 }

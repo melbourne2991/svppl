@@ -4,6 +4,8 @@ use turmoil::{
     Builder, IpVersion, Result,
 };
 
+mod cluster_monitor_transport;
+
 #[test]
 fn basic_test() {
     // let mut sim = Builder::new().build();
