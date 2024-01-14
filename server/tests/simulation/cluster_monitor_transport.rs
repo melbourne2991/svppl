@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chitchat::serialize::Serializable;
 use chitchat::{
     transport::{Socket, Transport},
-    ChitchatMessage, MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
+    ChitchatMessage
 };
 use std::net::SocketAddr;
 
@@ -62,7 +62,7 @@ impl UdpSocket {
         match ChitchatMessage::deserialize(&mut buf) {
             Ok(msg) => Ok(Some((from_addr, msg))),
             Err(err) => {
-                warn!(payload_len=len, from=%from_addr, err=%err, "invalid-chitchat-payload");
+                tracing::warn!(payload_len=len, from=%from_addr, err=%err, "invalid-chitchat-payload");
                 Ok(None)
             }
         }

@@ -90,7 +90,7 @@ impl PartitionResolverHandle {
     }
 }
 
-pub async fn start(cluster_monitor: &ClusterMonitor) -> PartitionResolverHandle {
+pub async fn start(cluster_monitor: ClusterMonitor) -> PartitionResolverHandle {
     let partition_resolver = PartitionResolver::new(&cluster_monitor, 50, (0, 0));
     let mut ws = cluster_monitor.watch().await;
     let mut pr = partition_resolver.clone();

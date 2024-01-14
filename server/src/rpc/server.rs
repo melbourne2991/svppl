@@ -49,8 +49,6 @@ pub async fn start(
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
-    // let pr = partition_resolver.clone();
-
     let graceful = Server::bind(&listen_addr)
         .serve(make_service_fn(move |_| {
             let mut core = ServiceBuilder::new()

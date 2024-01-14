@@ -49,7 +49,7 @@ pub async fn start(opts: crate::opts::Opts) -> anyhow::Result<AppHandle> {
         .context("failed to start gossip api")?;
 
     let partition_resolver_handle =
-        partition_resolver::start(&cluster_monitor_handle.cluster_monitor()).await;
+        partition_resolver::start(cluster_monitor_handle.cluster_monitor()).await;
 
     let rpc_handle = crate::rpc::server::start(
         opts.grpc_listen_addr,

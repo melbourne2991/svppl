@@ -12,9 +12,9 @@ use std::{
 use anyhow::Result;
 use chitchat::{
     spawn_chitchat, transport::UdpTransport, Chitchat, ChitchatConfig, ChitchatHandle, ChitchatId,
-    ChitchatIdGenerationEq, ChitchatIdNodeEq, FailureDetectorConfig, NodeState,
+    ChitchatIdGenerationEq, FailureDetectorConfig, NodeState,
 };
-use futures::{Future, StreamExt};
+use futures::{StreamExt};
 use std::hash::Hash;
 use tokio::{
     sync::{oneshot, watch::Receiver, Mutex, RwLock},
@@ -145,14 +145,14 @@ impl ClusterMonitor {
         match &*guard {
             Some(rx) => WatchStream::new(rx.clone()),
             None => {
-                let rx = self.make_watch().await;
+                let rx = self.cluster_change_receiver().await;
                 *self.change_rx.lock().await = Some(rx.clone());
                 WatchStream::new(rx)
             }
         }
     }
 
-    pub async fn make_watch(&self) -> Receiver<Vec<ClusterStateChange>> {
+    async fn cluster_change_receiver(&self) -> Receiver<Vec<ClusterStateChange>> {
         let locked = self.chitchat.lock().await;
 
         let mut changes = locked.live_nodes_watcher();
